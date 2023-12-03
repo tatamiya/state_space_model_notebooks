@@ -1,0 +1,134 @@
+---
+title: "時系列の成分分解の例"
+author: "tatamiya"
+date: "2023-11-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(KFAS)
+library(ggplot2)
+library(gridExtra)
+
+font <- "HiraKakuProN-W3"
+options(digits = 3)
+```
+
+
+# 1. データの読み込み
+
+```{r}
+## 岩波データサイエンスVol.1 松浦(2015)より
+## https://github.com/iwanami-datascience/vol1/matsuura/example2/input/data-season.txt
+datafile <- "../data/data-season.txt"
+data <- read.csv(datafile)
+
+Y <- data$Y
+
+p_obs <- ggplot(data) +
+  geom_line(aes(x=seq_along(Y), y = Y), color='black', linewidth=1) +
+  labs(x = "Time [四半期]", y = "販売個数 [千個]") +
+  theme_classic(base_family = font) +
+  theme(legend.title = element_blank(),
+        legend.justification = c(0, 1),
+        legend.position = c(0.1, 1))
+print(p_obs)
+```
+
+
+# 2. モデル構築
+
+```{r}
+## ローカルレベル+季節成分モデル 
+## Q, Hは、最尤法で推定が必要なハイパーパラメータ
+model <- SSModel(Y ~ SSMtrend(degree = 1, Q=NA) 
+                 + SSMseasonal(4, sea.type = "dummy", Q=NA),
+                 H=NA)
+
+## パラメータ推定
+## 2番目の引数は、パラメータ (Q, Q, H) の初期値(numeric(3) = (0, 0, 0))
+## methodは最適化手法。今回は準ニュートン法
+fit <- fitSSM(model, numeric(3), method="BFGS")
+```
+
+
+# 3. 結果の出力
+
+```{r, include=FALSE}
+## 結果をデータフレームにまとめる関数
+makeDataFrameQuantile <- function(Y, fitted_model, states="all", interval="confidence", level=0.95){
+  
+  alphahat <- predict(fitted_model, interval=interval, states=states, level=level)
+  
+  estimated <- data.frame(Time = seq_along(Y),
+                          Value = alphahat[,1],
+                          Lower = alphahat[, 2],
+                          Upper = alphahat[, 3],
+                          Observed = Y
+  )
+  
+  return(estimated)
+}
+
+## 描画用の関数
+plotResults <- function(estimated, observed, font){
+  
+  p <- ggplot(estimated) +
+    geom_line(aes(x = Time, y = Value), color='blue') +
+    geom_ribbon(aes(x = Time, ymin = Lower, ymax = Upper),
+                fill = "blue", alpha = 0.5) +
+    labs(x = "Time [四半期]", y = "販売個数 [千個]") +
+    theme_classic(base_family = font) +
+    theme(legend.title = element_blank(),
+          legend.justification = c(0, 1),
+          legend.position = c(0.1, 1))
+  if (!is.null(observed)){
+    p <- p + geom_line(aes(x=Time, y=Observed), color='black', linewidth=1, alpha=0.9)
+  }
+  
+  return(p)
+}
+```
+
+
+## 全成分（トレンド成分+季節成分+観測ノイズ）
+
+```{r}
+pred_all <- makeDataFrameQuantile(Y, fit$model, states="all", interval='prediction')
+p_all <- plotResults(pred_all, data, font)
+p_all <- p_all + labs(title="Trend + Seasonal + Noise")
+
+print(p_all)
+```
+
+## トレンド成分
+
+```{r}
+trend <- makeDataFrameQuantile(Y, fit$model, states="trend")
+p_trend <- plotResults(trend, observed=NULL, font)
+p_trend <- p_trend + labs(title="Trend")
+
+print(p_trend)
+```
+
+## 季節成分
+
+```{r}
+seasonal <- makeDataFrameQuantile(Y, fit$model, states="seasonal")
+p_seasonal <- plotResults(seasonal, observed=NULL, font)
+p_seasonal <- p_seasonal + labs(title="Seasonal")
+
+print(p_seasonal)
+```
+
+## 4つのグラフを並べる
+
+```{r}
+grid.arrange(p_obs,p_all,p_trend,p_seasonal)
+```
+## トレンド成分、季節成分（スライド用）
+
+```{r}
+grid.arrange(p_trend,p_seasonal)
+```

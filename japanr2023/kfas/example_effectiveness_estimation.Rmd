@@ -1,0 +1,154 @@
+---
+title: "状態空間モデルを用いた施策効果の推定例"
+author: "tatamiya"
+date: "2023-11-26"
+output:
+  pdf_document:
+    latex_engine: xelatex
+mainfont: Hiragino Kaku Gothic Pro
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(ggplot2)
+library(KFAS)
+```
+
+# 1. 施策効果が一定の場合
+
+## Data Loading
+
+```{r}
+# CausalImpact の Documentation を参考に生成
+# https://google.github.io/CausalImpact/CausalImpact.html
+
+set.seed(1)
+x1 <- 100 + arima.sim(model=list(ar=0.999), n=100)
+y_0 <- 1.2 * x1 + rnorm(100)
+y_1 <- y_0
+y_1[71:100] <- y_1[71:100] + 10
+
+time.points <- seq.Date(as.Date("2014-01-01"), by=1, length.out=100)
+post_start_date <- as.Date("2014-03-12")
+
+data<-data.frame(day=time.points, y1=y_1, y0=y_0, x1=x1)
+data<- data %>% mutate(is_post=case_when(day>=post_start_date~1, .default = 0))
+
+p <- ggplot(data=data) +
+  geom_line(aes(x=day, y=y1)) + 
+  geom_vline(xintercept=post_start_date, linetype='dotted') +
+  labs(y="PV")
+print(p)
+```
+
+## 介入フラグを用いた回帰
+
+```{r}
+model1 <- SSModel(y1 ~ SSMtrend(degree = 1, Q = NA) + is_post
+                 , data=data, H=NA)
+
+fit1 <- fitSSM(model1, numeric(3), method="BFGS")
+```
+
+## 介入がなかった場合の反実仮想的な予測値
+
+```{r}
+pred1_trend <- predict(fit1$model, states="trend", interval="confidence", level=0.95)
+
+data1_trend <- data %>% mutate(pred=pred1_trend[,1], lwr=pred1_trend[,2], upr=pred1_trend[,3])
+
+p <- ggplot(data1_trend) +
+  geom_line(aes(x=day, y=y1, color="actual", linetype="actual")) + 
+  geom_line(aes(x=day, y=pred, color="pred", linetype="pred")) + 
+  geom_vline(xintercept=post_start_date, linetype='dotted')+
+  geom_ribbon(aes(x = day, ymin = lwr, ymax = upr),
+            fill = "blue", alpha = 0.5) +
+  scale_color_manual(name="", values = c("pred"="blue", "actual"="black")) +
+  scale_linetype_manual(name="", values = c("pred"="solid", "actual"="dashed")) +
+  labs(x="day", y="PV")
+print(p)
+```
+
+## 介入効果の推定
+
+
+```{r}
+pred1_reg <- predict(fit1$model, states="regression", interval="confidence", level=0.95)
+
+data1_reg <- data %>%
+  mutate(pred=pred1_reg[,1], lwr=pred1_reg[,2], upr=pred1_reg[,3]) %>%
+  mutate(actual_lift=y1-y0)
+
+
+p <- ggplot(data1_reg) +
+  geom_line(aes(x=day, y=pred, color="pred"), color="blue") + 
+  geom_vline(xintercept=post_start_date, linetype="dotted")+
+  geom_ribbon(aes(x = day, ymin = lwr, ymax = upr),
+            fill = "blue", alpha = 0.5) +
+  labs(x="day", y="Lift")
+print(p)
+```
+
+# 2. 施策効果が時間と共に変化する場合
+
+
+```{r}
+set.seed(3)
+x1 <- 100 + arima.sim(model=list(ar=0.999), n=100)
+y_0 <- 1.2 * x1 + rnorm(100)
+y_1 <- y_0
+
+effect_func <- function(x) {
+   40.0 * x * exp(-x/2) /2
+}
+
+y_1[71:100] <- y_1[71:100] + effect_func(seq_len(30)-1)
+
+time.points <- seq.Date(as.Date("2014-01-01"), by=1, length.out=100)
+post_start_date <- as.Date("2014-03-12")
+
+data2 <-data.frame(day=time.points, y1=y_1, y0=y_0, x1=x1)
+data2 <- data2 %>% mutate(is_post=case_when(day>=post_start_date~1, .default = 0))
+
+p <- ggplot(data=data2) +
+  geom_line(aes(x=day, y=y1, color="observed (y1)", linetype="observed (y1)")) + 
+  geom_line(aes(x=day, y=y0, color="counter-factual (y0)", linetype="counter-factual (y0)")) +
+  geom_vline(xintercept=post_start_date, linetype='dotted') +
+  scale_color_manual(name="value", values=c("observed (y1)"="black", "counter-factual (y0)"="black")) +
+  scale_linetype_manual(name="value", values=c("observed (y1)"="solid", "counter-factual (y0)"="dashed")) +
+  labs(y="y1/y0")
+print(p)
+```
+
+
+## 介入フラグを用いた回帰
+
+```{r}
+model2 <- SSModel(y1 ~ SSMtrend(degree = 1, Q = NA) + 
+                    SSMregression(~is_post, Q=NA)
+                 , data=data2, H=NA)
+
+fit2 <- fitSSM(model2, numeric(3), method="BFGS")
+```
+
+## 介入効果の推定
+
+```{r}
+pred2_reg <- predict(fit2$model, states="regression", interval="confidence", level=0.95)
+
+data2_reg <- data2 %>%
+  mutate(pred=pred2_reg[,1], lwr=pred2_reg[,2], upr=pred2_reg[,3]) %>%
+  mutate(actual_lift=y1-y0)
+
+p <- ggplot(data2_reg) +
+  geom_line(aes(x=day, y=pred, color="pred", linetype="pred")) + 
+  geom_vline(xintercept=post_start_date, linetype='dotted')+
+  geom_line(aes(x=day, y=actual_lift, color="actual", linetype="actual")) + 
+  geom_ribbon(aes(x = day, ymin = lwr, ymax = upr),
+            fill = "blue", alpha = 0.5) +
+  scale_color_manual(name="Lift", values = c("pred"="blue", "actual"="black")) +
+  scale_linetype_manual(name="Lift", values = c("pred"="solid", "actual"="dashed")) +
+  labs(x="day", y="Lift (y1 - y0)")
+print(p)
+```
